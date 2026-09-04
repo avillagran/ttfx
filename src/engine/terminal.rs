@@ -714,13 +714,10 @@ impl Terminal {
                 if cell == EMPTY_RENDER_CELL {
                     row.push(' ');
                 } else {
-                    row.push_str(
-                        arena[cell as usize]
-                            .animation
-                            .current_character_visual
-                            .formatted_symbol
-                            .as_str(),
-                    );
+                    arena[cell as usize]
+                        .animation
+                        .current_character_visual
+                        .push_rendered_to(row);
                 }
             }
         }
@@ -771,7 +768,21 @@ impl Terminal {
             if row_index + 1 < height {
                 out.push(b'\n');
             }
-            out.extend_from_slice(&self.row_bytes[row_index]);
+            if ansi::transforms_active() {
+                // Live transforms bypass the immutable row cache: the pooled
+                // visuals' cached symbols carry authored colors.
+                for &visual in &self.render_visuals
+                    [row_index * width..(row_index + 1) * width]
+                {
+                    // SAFETY: non-null entries point at pooled visuals, which are never freed.
+                    match unsafe { visual.as_ref() } {
+                        None => out.push(b' '),
+                        Some(visual) => visual.append_rendered_to(&mut out),
+                    }
+                }
+            } else {
+                out.extend_from_slice(&self.row_bytes[row_index]);
+            }
         }
         // SAFETY: every appended run is a whole formatted symbol, which is UTF-8.
         unsafe { String::from_utf8_unchecked(out) }

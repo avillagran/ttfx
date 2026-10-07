@@ -6,7 +6,6 @@
 use clap::Parser;
 use ttfx::cli::Cli;
 use ttfx::engine::ctx::Clock;
-use ttfx::engine::terminal::TerminalConfig;
 use ttfx::fx::{self, AudioColor, Engine};
 use ttfx::utils::rng::Rng;
 
@@ -85,6 +84,96 @@ const ARGS: &[&str] = &[
     "--ignore-terminal-dimensions",
     "decrypt",
 ];
+
+/// Cost report (a measurement, not a gate): render_here ns/frame with no
+/// transform, a constant transform, and a transform whose parameters change
+/// every frame (worst case: a retarget each frame). Run with:
+/// cargo test --release --test fx_audio_color -- --ignored --nocapture
+#[test]
+#[ignore]
+fn transform_cost_report() {
+    use std::time::Instant;
+    for effect_name in ["print", "decrypt", "matrix", "beams", "thunderstorm"] {
+        for mode in ["plain", "constant", "churn"] {
+            let args = [
+                "ttfx",
+                "--canvas-width",
+                "120",
+                "--canvas-height",
+                "40",
+                "--ignore-terminal-dimensions",
+                effect_name,
+            ];
+            let (mut e, mut effect) = build(&args);
+            effect.build(&mut e).unwrap();
+            if mode == "constant" {
+                e.set_audio_color(Some(AudioColor {
+                    brightness: 0.5,
+                    matrix: IDENTITY,
+                }));
+            }
+            let mut samples = Vec::new();
+            for frame in 0..600 {
+                if mode == "churn" {
+                    let b = 0.5 + 0.25 * (frame as f32 / 60.0).sin();
+                    e.set_audio_color(Some(AudioColor {
+                        brightness: b,
+                        matrix: IDENTITY,
+                    }));
+                }
+                if !effect.next_frame(&mut e) {
+                    break;
+                }
+                e.frame();
+                let t = Instant::now();
+                e.render_here();
+                samples.push(t.elapsed().as_nanos() as u64);
+            }
+            samples.sort_unstable();
+            let median = samples[samples.len() / 2];
+            eprintln!(
+                "REPORT {effect_name} {mode} median_ns={median} frames={}",
+                samples.len()
+            );
+        }
+    }
+}
+
+/// A transform whose parameters change every frame on a large canvas:
+/// hundreds of visuals retargeted each frame, variants interned past the
+/// renderer's synced watermark. Regression gate for the stale-buffer class:
+/// the frame must contain no bytes from beyond the synced region (NUL
+/// padding would emit as 0x00) and the run must simply not crash.
+#[test]
+fn churning_transform_on_large_canvas_stays_valid() {
+    for effect_name in ["decrypt", "thunderstorm", "matrix"] {
+        let args = [
+            "ttfx",
+            "--canvas-width",
+            "120",
+            "--canvas-height",
+            "40",
+            "--ignore-terminal-dimensions",
+            effect_name,
+        ];
+        let (mut e, mut effect) = build(&args);
+        effect.build(&mut e).unwrap();
+        let mut saw_color = false;
+        for frame in 0..300 {
+            let b = 0.5 + 0.25 * (frame as f32 / 60.0).sin();
+            e.set_audio_color(Some(AudioColor {
+                brightness: b,
+                matrix: IDENTITY,
+            }));
+            let Some(bytes) = frame_bytes(&mut e, effect.as_mut()) else {
+                break;
+            };
+            assert!(!bytes.contains(&0), "{effect_name} frame {frame} has NUL");
+            saw_color |= bytes.windows(5).any(|w| w == b"38;2;");
+        }
+        assert!(saw_color, "{effect_name} shows transformed colors");
+    }
+}
 
 #[test]
 fn no_transform_and_identity_transform_keep_bytes_identical() {

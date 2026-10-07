@@ -408,6 +408,15 @@ impl Render {
         self.retarget_upto = authored_now;
         self.applied_epoch = Some(epoch);
         self.refresh_spans();
+        // The retarget interned variants AFTER this frame's sync: their
+        // bytes and spans are still only in the pool. Bring this renderer's
+        // buffers up to date before emission reads through the new spans.
+        if pool.len() > self.spans.len() {
+            let (spans, bytes) =
+                pool_delta(pool, self.spans.len(), self.bytes.len() - COPY_BLOCK);
+            self.fit(pool_room(pool));
+            self.sync(spans, bytes, self.owner.len());
+        }
     }
 
     /// Re-resolve every owned cell's span after a retarget or a restore:

@@ -31,8 +31,10 @@ pub trait Effect: Hooks {
 
 impl Engine {
     /// BaseEffectIterator.frame: enforce the frame rate (real clock only) and
-    /// advance the virtual clock.
-    fn frame(&mut self) {
+    /// advance the virtual clock. Embedders driving `next_frame` and
+    /// `render_here` themselves call this once per frame, as the run loop
+    /// does.
+    pub fn frame(&mut self) {
         if self.paced() {
             self.terminal.enforce_framerate();
         }
@@ -60,6 +62,9 @@ impl Engine {
 /// or there is only one CPU.
 fn threaded(e: &Engine) -> bool {
     !e.paced()
+        // The threaded renderer is the CLI's; an embedder's live transform
+        // renders in place, where the span table can be retargeted.
+        && !e.audio_color_active()
         && std::env::var_os("TTFX_THREADS").is_none_or(|v| v != "1" && v != "0")
         && cpus() >= 2
 }

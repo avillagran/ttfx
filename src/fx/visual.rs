@@ -161,7 +161,7 @@ impl VisualInfo {
 }
 
 /// Byte span of a visual in the pool.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Span {
     pub offset: u32,
     pub len: u32,
@@ -206,6 +206,16 @@ impl VisualPool {
             Ok(visual) => visual,
             Err(at) => self.add(symbols, &info, key, hash, at),
         }
+    }
+
+    /// The VisualInfo a handle was made of (the pool keeps only its key).
+    pub fn info_of(&self, visual: Visual) -> VisualInfo {
+        self.keys[visual.0 as usize].info()
+    }
+
+    /// The handles handed out so far: 0..len() are all valid.
+    pub fn len(&self) -> usize {
+        self.spans.len()
     }
 
     /// `make` of `sym` in generated colors with no attributes but

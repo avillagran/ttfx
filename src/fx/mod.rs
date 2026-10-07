@@ -41,6 +41,27 @@ pub use events::{Action, Caller, Event};
 pub use scene::{Frame, SceneId};
 pub use visual::{Visual, VisualInfo};
 
+/// Live color transform installed by an embedder: a row-major 3x3 hue
+/// matrix and a brightness multiplier, the same model as the original
+/// engine's `ansi::set_audio_color`. Applied per frame to the colors the
+/// visuals were authored with, never accumulated into them. With no
+/// transform installed the output is byte-identical.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AudioColor {
+    pub brightness: f32,
+    pub matrix: [f32; 9],
+}
+
+/// Per-frame audio levels for effect reactivity (thunderstorm et al.): the
+/// embedder samples its source and feeds them before `next_frame`. All
+/// zero/false means silence and selects the reference behavior.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct AudioLevels {
+    pub volume: f32,
+    pub bass: f32,
+    pub beat: bool,
+}
+
 /// The effect side of CALLBACK actions: `Action::Callback(id, arg)` calls
 /// `callback(engine, slot, id, arg)`.
 pub trait Hooks {
@@ -351,6 +372,10 @@ pub struct Engine {
     motion_epoch: u32,
     /// The old front end's terminal, kept for resize handling only.
     pub terminal: Terminal,
+    /// The embedder's live color transform (set_audio_color).
+    audio_color: Option<AudioColor>,
+    /// The embedder's per-frame audio levels (set_audio_levels).
+    pub audio_levels: AudioLevels,
 }
 
 impl Engine {
@@ -498,6 +523,8 @@ impl Engine {
             batch: batch::Batch::default(),
             motion_epoch: 0,
             terminal,
+            audio_color: None,
+            audio_levels: AudioLevels::default(),
         };
         engine.active.grow(engine.ch.len());
         engine.paths.m.grow(engine.ch.len());
@@ -509,6 +536,27 @@ impl Engine {
     #[inline]
     pub fn name(&mut self, name: &str) -> Name {
         self.names.intern(name)
+    }
+
+    // -------------------------------------------------------------- embedding audio
+
+    /// Install (Some) or remove (None) the live color transform. The change
+    /// takes effect on the next rendered frame; removing it restores the
+    /// authored colors byte-for-byte. A transform makes a run render in
+    /// place (the threaded CLI renderer is embedder-free).
+    pub fn set_audio_color(&mut self, color: Option<AudioColor>) {
+        self.audio_color = color;
+    }
+
+    /// A live color transform is installed.
+    #[inline]
+    pub fn audio_color_active(&self) -> bool {
+        self.audio_color.is_some()
+    }
+
+    /// Feed this frame's audio levels for effect reactivity.
+    pub fn set_audio_levels(&mut self, levels: AudioLevels) {
+        self.audio_levels = levels;
     }
 
     #[inline]

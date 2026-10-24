@@ -274,3 +274,47 @@ fn constant_parameters_intern_a_bounded_set_of_variants() {
         "variant surplus must not grow with constant parameters: {deltas:?}"
     );
 }
+
+/// The frame's bytes, rendered in place with no effect driving the engine.
+fn render_now(e: &mut Engine) -> String {
+    e.render_here();
+    let mut parts: Vec<std::io::IoSlice<'_>> = Vec::new();
+    e.renderer().frame_parts(b"", b"", &mut parts);
+    let bytes: Vec<u8> = parts.iter().flat_map(|p| p.iter().copied()).collect();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// `sym` in `hex`, as an effect authors it.
+fn authored(e: &mut Engine, sym: &str, hex: &str) -> fx::Visual {
+    let sym = e.sym(sym);
+    let info = fx::VisualInfo {
+        sym,
+        fg: Some(ttfx::utils::graphics::Color::from_hex(hex).unwrap()),
+        bg: None,
+        attrs: fx::visual::HAS_COLORS,
+    };
+    e.visuals.make(&e.symbols, info)
+}
+
+#[test]
+fn a_visual_authored_with_a_variants_key_is_still_transformed() {
+    // Halving white interns 7f7f7f; an effect authoring 7f7f7f afterwards
+    // must get its own visual, halved to 3f3f3f, not the variant.
+    let (mut e, _) = build(ARGS);
+    e.set_audio_color(Some(AudioColor {
+        brightness: 0.5,
+        matrix: IDENTITY,
+    }));
+    let white = authored(&mut e, "X", "ffffff");
+    e.set_visible(0, true);
+    e.set_visual(0, white);
+    assert!(render_now(&mut e).contains("38;2;127;127;127mX"));
+    let grey = authored(&mut e, "X", "7f7f7f");
+    e.set_visible(1, true);
+    e.set_visual(1, grey);
+    let frame = render_now(&mut e);
+    assert!(
+        frame.contains("38;2;63;63;63mX"),
+        "authored grey is halved: {frame:?}"
+    );
+}

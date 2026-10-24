@@ -175,6 +175,9 @@ pub struct VisualPool {
     no_color: bool,
     xterm_colors: bool,
     table: Table,
+    /// The renderer's color-transform variants, interned apart from `table`
+    /// so `make` never hands an effect one (made on first use).
+    variants: Option<Table>,
     /// Every visual's key (`raw` ones too), by handle: its info follows from
     /// it, so only the key is kept (a new visual writes 24 bytes, not ~70).
     keys: Vec<Key>,
@@ -191,6 +194,7 @@ impl VisualPool {
             no_color,
             xterm_colors,
             table: Table::new(),
+            variants: None,
             keys: Vec::with_capacity(1 << 14),
             spans: Vec::with_capacity(1 << 14),
             bytes: vec![0; COPY_BLOCK],
@@ -206,11 +210,6 @@ impl VisualPool {
             Ok(visual) => visual,
             Err(at) => self.add(symbols, &info, key, hash, at),
         }
-    }
-
-    /// The VisualInfo a handle was made of (the pool keeps only its key).
-    pub fn info_of(&self, visual: Visual) -> VisualInfo {
-        self.keys[visual.0 as usize].info()
     }
 
     /// The handles handed out so far: 0..len() are all valid.
@@ -239,6 +238,24 @@ impl VisualPool {
         }
     }
 
+    /// `make` for the renderer's transformed variants: deduplicated among
+    /// themselves, never against the visuals effects make.
+    pub(super) fn make_variant(&mut self, symbols: &Symbols, info: VisualInfo) -> Visual {
+        let key = Key::of(&info);
+        let hash = key.hash();
+        let variants = self.variants.get_or_insert_with(Table::new);
+        match variants.find(&key, hash, &self.keys) {
+            Ok(visual) => visual,
+            Err(at) => {
+                let visual = self.append(symbols, &info, key);
+                if let Some(variants) = &mut self.variants {
+                    variants.insert(at, hash, visual);
+                }
+                visual
+            }
+        }
+    }
+
     /// A new visual: `info`'s bytes formatted at the pool's end, its `key`
     /// put in the table's empty entry `at`.
     #[inline(never)]
@@ -250,6 +267,14 @@ impl VisualPool {
         hash: u32,
         at: usize,
     ) -> Visual {
+        let handle = self.append(symbols, info, key);
+        self.table.insert(at, hash, handle);
+        handle
+    }
+
+    /// `info`'s bytes formatted at the pool's end, under `key`.
+    #[inline(always)]
+    fn append(&mut self, symbols: &Symbols, info: &VisualInfo, key: Key) -> Visual {
         let (no_color, xterm_colors) = (self.no_color, self.xterm_colors);
         let offset = self.bytes.len() - COPY_BLOCK;
         // formatted in place, over the slack and room made past it (a
@@ -278,7 +303,6 @@ impl VisualPool {
             offset: offset as u32,
             len: len as u32,
         });
-        self.table.insert(at, hash, handle);
         handle
     }
 

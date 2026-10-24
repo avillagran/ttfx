@@ -389,17 +389,11 @@ impl Render {
             if self.variant_handles.contains(&(handle as u32)) {
                 continue;
             }
-            let info = pool.info_of(Visual(handle as u32));
+            let info = pool.info(Visual(handle as u32));
             self.spans[handle] = match recolor_info(info, audio) {
                 Some(info) => {
-                    // Mark only genuinely new handles: a transform landing on
-                    // an existing authored key returns that handle, whose
-                    // slot must keep being retargeted on later walks.
-                    let before = pool.len();
-                    let variant = pool.make(symbols, info);
-                    if pool.len() > before {
-                        self.variant_handles.insert(variant.0);
-                    }
+                    let variant = pool.make_variant(symbols, info);
+                    self.variant_handles.insert(variant.0);
                     pool.spans[variant.0 as usize]
                 }
                 None => pool.spans[handle],

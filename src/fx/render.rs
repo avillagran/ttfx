@@ -375,6 +375,8 @@ impl Render {
             }
             return;
         };
+        // the colors follow the quantized parameters the epoch compares
+        let audio = quantized(audio);
         let epoch = audio_epoch(audio);
         let authored_now = pool.len();
         if self.applied_epoch == Some(epoch) && authored_now <= self.retarget_upto {
@@ -1055,16 +1057,23 @@ fn chunk_blocks_neon(chunk: &mut [u8]) -> u32 {
     bits_u8x16(vcombine_u8(vmovn_u16(lo), vmovn_u16(hi)))
 }
 
-/// The transform's epoch: the parameters quantized to 1/64 steps (audio
-/// drives are continuous; quantization bounds how many variants a run can
-/// intern) folded into one word.
+/// The parameters in 1/64 steps: audio drives are continuous, and steps
+/// limit how many distinct transforms, and so variants, a drive produces.
+fn quantized(audio: AudioColor) -> AudioColor {
+    let q = |v: f32| (v * 64.0).round() / 64.0;
+    AudioColor {
+        brightness: q(audio.brightness),
+        matrix: audio.matrix.map(q),
+    }
+}
+
+/// A quantized transform folded into one word.
 fn audio_epoch(audio: AudioColor) -> u64 {
     use std::hash::Hasher;
-    let q = |v: f32| (v * 64.0).round().to_bits();
     let mut h = FxHasher::default();
-    h.write_u32(q(audio.brightness));
+    h.write_u32(audio.brightness.to_bits());
     for c in audio.matrix {
-        h.write_u32(q(c));
+        h.write_u32(c.to_bits());
     }
     h.finish()
 }

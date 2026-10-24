@@ -318,3 +318,30 @@ fn a_visual_authored_with_a_variants_key_is_still_transformed() {
         "authored grey is halved: {frame:?}"
     );
 }
+
+#[test]
+fn parameters_in_one_quantization_step_transform_alike() {
+    // 0.5 and 0.507 share an epoch, so they must also share the colors:
+    // a visual made under the second matches one retargeted under the first.
+    let (mut e, _) = build(ARGS);
+    e.set_audio_color(Some(AudioColor {
+        brightness: 0.5,
+        matrix: IDENTITY,
+    }));
+    let x = authored(&mut e, "X", "ffffff");
+    e.set_visible(0, true);
+    e.set_visual(0, x);
+    render_now(&mut e);
+    e.set_audio_color(Some(AudioColor {
+        brightness: 0.507,
+        matrix: IDENTITY,
+    }));
+    let y = authored(&mut e, "Y", "ffffff");
+    e.set_visible(1, true);
+    e.set_visual(1, y);
+    let frame = render_now(&mut e);
+    assert!(
+        frame.contains("38;2;127;127;127mX") && frame.contains("38;2;127;127;127mY"),
+        "one epoch, one transform: {frame:?}"
+    );
+}

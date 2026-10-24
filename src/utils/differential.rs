@@ -12,6 +12,11 @@ pub(crate) struct DifferentialOutput {
 }
 
 impl DifferentialOutput {
+    /// Forget what the terminal shows, so the next frame draws every cell.
+    pub(crate) fn invalidate(&mut self) {
+        self.cells.iter_mut().for_each(Vec::clear);
+    }
+
     pub(crate) fn frame<'a>(
         &mut self,
         width: usize,

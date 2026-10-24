@@ -116,7 +116,9 @@ pub fn run_effect(
             }
             e.render_here();
             if differential {
-                if let Some(bytes) = e.renderer().differential_frame(&mut output, &move_to_top) {
+                if e.terminal.take_repaint() {
+                    output.invalidate();
+                } else if let Some(bytes) = e.renderer().differential_frame(&mut output, &move_to_top) {
                     out.write_all(bytes)?;
                     continue;
                 }
@@ -199,6 +201,8 @@ struct Packet {
     slots: usize,
     /// The pool's capacity (see Render::fit).
     room: (usize, usize),
+    /// Write this frame whole (see Terminal::take_repaint).
+    repaint: bool,
 }
 
 struct Ring {
@@ -283,6 +287,7 @@ impl Submitter<'_> {
         self.bytes += bytes.len();
         packet.slots = e.ch.len();
         packet.room = pool_room(&e.visuals);
+        packet.repaint = e.terminal.take_repaint();
         self.head = self.head.wrapping_add(1);
         ring.head.store(self.head, SeqCst);
         if ring.render_sleeping.load(SeqCst)
@@ -366,7 +371,10 @@ fn render_loop(
                 r.sync(&packet.spans, &packet.bytes, packet.slots);
                 r.apply(&packet.log);
                 r.render_rows();
-                let bytes = if differential {
+                let bytes = if differential && packet.repaint {
+                    output.invalidate();
+                    None
+                } else if differential {
                     r.differential_frame(&mut output, prefix)
                 } else {
                     None

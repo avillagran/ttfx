@@ -127,6 +127,14 @@ def main() -> int:
     print("tty, resize that cannot move a cell")
     check("runs", runs_in(drive(["--seed", "1", "pour"], resizes=[(100, 30)])), 1)
 
+    # Differential frames position each cell and carry no newline, so a frame
+    # with one is whole: it repaints whatever the terminal did to the canvas.
+    print("tty, resize that cannot move a cell repaints the canvas")
+    frames = drive(["--seed", "1", "pour"], resizes=[(100, 30)]).split(b"\x1b8\x1b7")[1:-1]
+    ok = any(b"\n" in frame for frame in frames)
+    failures += not ok
+    print(f"  {'ok  ' if ok else 'FAIL'} a whole frame after the resize: {ok}")
+
     print("tty, resize that changes the canvas")
     changed = drive(["--seed", "1", "pour"], resizes=[(8, 24)])
     check("runs", runs_in(changed), 2)

@@ -88,7 +88,7 @@ fn single_column(bytes: &[u8]) -> bool {
         return false;
     };
     if !text.contains('\x1b') {
-        return UnicodeWidthStr::width(text) == 1;
+        return one_column(text);
     }
     let mut symbol = String::new();
     let mut chars = text.chars();
@@ -108,7 +108,13 @@ fn single_column(bytes: &[u8]) -> bool {
             symbol.push(ch);
         }
     }
-    UnicodeWidthStr::width(symbol.as_str()) == 1
+    one_column(&symbol)
+}
+
+/// unicode-width counts a lone control character as one column, but a
+/// terminal moves the cursor for it instead of drawing a cell.
+fn one_column(symbol: &str) -> bool {
+    !symbol.chars().any(char::is_control) && UnicodeWidthStr::width(symbol) == 1
 }
 
 #[cfg(test)]
@@ -158,6 +164,9 @@ mod tests {
         assert!(single_column("e\u{301}".as_bytes()));
         assert!(!single_column("界".as_bytes()));
         assert!(!single_column(b"\x1b[2JX"));
+        assert!(!single_column(b"\x08"));
+        assert!(!single_column(b"\t"));
+        assert!(!single_column(b"\x1b[31m\x08\x1b[0m"));
         let mut out = DifferentialOutput::default();
         assert!(out.frame(1, 1, b"TOP", |_, _| "界".as_bytes()).is_none());
         assert!(out.frame(1, 1, b"TOP", |_, _| b"X").is_none());

@@ -1080,7 +1080,7 @@ fn audio_epoch(audio: AudioColor) -> u64 {
 
 /// `info` with the transform applied to its present colors: None when the
 /// visual has no colors, so the retarget keeps the authored span. Indexed
-/// colors map through RGB and back, like the original engine's sgr_color.
+/// colors map through RGB and back to the nearest xterm-256 code.
 fn recolor_info(info: VisualInfo, audio: AudioColor) -> Option<VisualInfo> {
     if info.fg.is_none() && info.bg.is_none() {
         return None;

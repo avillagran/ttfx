@@ -897,9 +897,9 @@ impl Effect for Thunderstorm {
                 self.rain(e);
                 let levels = e.audio_levels;
                 if (levels.volume > 0.0 || levels.beat) && !self.strike_in_progress {
-                    // The original engine's on_audio: a fresh chance draw per
-                    // frame while audio drives it; silence never enters here,
-                    // keeping the ambient draw sequence byte-identical.
+                    // A fresh chance draw per frame while audio drives it;
+                    // silence never enters here, keeping the ambient draw
+                    // sequence byte-identical.
                     let volume = levels.volume.clamp(0.0, 1.0);
                     let threshold = if levels.beat { 0.22 } else { 0.42 };
                     if volume >= threshold {

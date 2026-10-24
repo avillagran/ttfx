@@ -42,8 +42,7 @@ pub use scene::{Frame, SceneId};
 pub use visual::{Visual, VisualInfo};
 
 /// Live color transform installed by an embedder: a row-major 3x3 hue
-/// matrix and a brightness multiplier, the same model as the original
-/// engine's `ansi::set_audio_color`. Applied per frame to the colors the
+/// matrix and a brightness multiplier. Applied per frame to the colors the
 /// visuals were authored with, never accumulated into them. With no
 /// transform installed the output is byte-identical.
 #[derive(Debug, Clone, Copy, PartialEq)]

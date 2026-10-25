@@ -541,8 +541,9 @@ impl Engine {
 
     /// Install (Some) or remove (None) the live color transform. The change
     /// takes effect on the next rendered frame; removing it restores the
-    /// authored colors byte-for-byte. A transform makes a run render in
-    /// place (the threaded CLI renderer is embedder-free).
+    /// authored colors byte-for-byte. A run renders in place while a
+    /// transform is installed: one installed mid-run takes the renderer
+    /// back from its thread.
     pub fn set_audio_color(&mut self, color: Option<AudioColor>) {
         self.audio_color = color;
     }

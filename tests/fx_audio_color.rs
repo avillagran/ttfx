@@ -7,6 +7,7 @@ use clap::Parser;
 use ttfx::cli::Cli;
 use ttfx::engine::ctx::Clock;
 use ttfx::fx::{self, AudioColor, Engine};
+use ttfx::utils::graphics::Color;
 use ttfx::utils::rng::Rng;
 
 const IDENTITY: [f32; 9] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
@@ -250,29 +251,94 @@ fn visuals_created_after_activation_are_transformed_too() {
     assert!(checked > 10, "late frames carry colored visuals");
 }
 
-#[test]
-fn constant_parameters_intern_a_bounded_set_of_variants() {
+/// (authored visuals, variants) after each of `n` frames of ARGS rendered
+/// under `transform(frame)`: the authored count is a plain run's, as the
+/// transform never reaches the effect.
+fn variant_counts(n: usize, transform: impl Fn(usize) -> AudioColor) -> Vec<(usize, usize)> {
     let (mut e, mut effect) = build(ARGS);
     effect.build(&mut e).unwrap();
     let (mut e2, mut effect2) = build(ARGS);
     effect2.build(&mut e2).unwrap();
-    e2.set_audio_color(Some(AudioColor {
+    let mut counts = Vec::new();
+    for frame in 0..n {
+        e2.set_audio_color(Some(transform(frame)));
+        frame_bytes(&mut e, effect.as_mut());
+        frame_bytes(&mut e2, effect2.as_mut());
+        let authored = e.visuals.len();
+        counts.push((authored, e2.visuals.len() - authored));
+    }
+    counts
+}
+
+#[test]
+fn constant_parameters_intern_a_bounded_set_of_variants() {
+    let counts = variant_counts(30, |_| AudioColor {
+        brightness: 0.5,
+        matrix: IDENTITY,
+    });
+    for (frame, pair) in counts.windows(2).enumerate() {
+        let ((authored, variants), (authored_next, variants_next)) = (pair[0], pair[1]);
+        assert!(variants <= authored, "frame {frame}: more variants than visuals: {counts:?}");
+        // equal parameters, equal variants: only a new visual makes one
+        assert!(
+            variants_next - variants <= authored_next - authored,
+            "frame {frame}: variants grew past the new visuals: {counts:?}"
+        );
+    }
+}
+
+#[test]
+fn a_changing_transform_rewrites_the_variants_it_has() {
+    // a new quantization step every frame: each visual keeps one variant
+    let brightness = |frame: usize| 0.2 + frame as f32 * 0.02;
+    let counts = variant_counts(30, |frame| AudioColor {
+        brightness: brightness(frame),
+        matrix: IDENTITY,
+    });
+    for (frame, &(authored, variants)) in counts.iter().enumerate() {
+        assert!(variants <= authored, "frame {frame}: {counts:?}");
+    }
+
+    // and every frame shows that frame's step: rewritten variants redraw
+    let (mut e, mut effect) = build(ARGS);
+    effect.build(&mut e).unwrap();
+    let plain = frames(&mut e, effect.as_mut(), 30);
+    let (mut e, mut effect) = build(ARGS);
+    effect.build(&mut e).unwrap();
+    let mut checked = 0;
+    for (frame, p) in plain.iter().enumerate() {
+        e.set_audio_color(Some(AudioColor {
+            brightness: brightness(frame),
+            matrix: IDENTITY,
+        }));
+        let step = (brightness(frame) * 64.0).round() / 64.0;
+        let scaled = |c: u8| (c as f32 * step).clamp(0.0, 255.0) as u8;
+        let t = frame_bytes(&mut e, effect.as_mut()).unwrap();
+        let (p, t) = (fg_triples(p), fg_triples(&t));
+        assert_eq!(p.len(), t.len(), "frame {frame}");
+        for ((r, g, b), got) in p.into_iter().zip(t) {
+            assert_eq!((scaled(r), scaled(g), scaled(b)), got, "frame {frame}");
+            checked += 1;
+        }
+    }
+    assert!(checked > 100, "decrypt emits true-color visuals");
+}
+
+#[test]
+fn no_color_runs_make_no_variants() {
+    let args = [&["ttfx", "--no-color"], &ARGS[1..]].concat();
+    let (mut e, mut effect) = build(&args);
+    effect.build(&mut e).unwrap();
+    let plain = frames(&mut e, effect.as_mut(), 6);
+    let authored = e.visuals.len();
+    let (mut e, mut effect) = build(&args);
+    effect.build(&mut e).unwrap();
+    e.set_audio_color(Some(AudioColor {
         brightness: 0.5,
         matrix: IDENTITY,
     }));
-    let mut deltas = Vec::new();
-    for _ in 0..10 {
-        frame_bytes(&mut e, effect.as_mut());
-        frame_bytes(&mut e2, effect2.as_mut());
-        deltas.push(e2.visuals.len() as i64 - e.visuals.len() as i64);
-    }
-    // The variant count over authored is fixed once every authored visual
-    // has been retargeted: equal parameters, equal keys, no new interning.
-    let last = deltas.last().unwrap();
-    assert!(
-        deltas.iter().all(|&d| d <= *last),
-        "variant surplus must not grow with constant parameters: {deltas:?}"
-    );
+    assert_eq!(frames(&mut e, effect.as_mut(), 6), plain);
+    assert_eq!(e.visuals.len(), authored, "no variants without colors");
 }
 
 /// The frame's bytes, rendered in place with no effect driving the engine.
@@ -286,14 +352,69 @@ fn render_now(e: &mut Engine) -> String {
 
 /// `sym` in `hex`, as an effect authors it.
 fn authored(e: &mut Engine, sym: &str, hex: &str) -> fx::Visual {
+    authored_in(e, sym, Color::from_hex(hex).unwrap())
+}
+
+fn authored_in(e: &mut Engine, sym: &str, fg: Color) -> fx::Visual {
     let sym = e.sym(sym);
     let info = fx::VisualInfo {
         sym,
-        fg: Some(ttfx::utils::graphics::Color::from_hex(hex).unwrap()),
+        fg: Some(fg),
         bg: None,
         attrs: fx::visual::HAS_COLORS,
     };
     e.visuals.make(&e.symbols, info)
+}
+
+/// X in xterm 15 and Y in its hex, ffffff, both shown, under `transform`.
+fn xterm_and_hex_white(args: &[&str], transform: AudioColor) -> String {
+    let (mut e, _) = build(args);
+    e.set_audio_color(Some(transform));
+    let x = authored_in(&mut e, "X", Color::from_xterm(15));
+    let y = authored(&mut e, "Y", "ffffff");
+    for (slot, visual) in [(0, x), (1, y)] {
+        e.set_visible(slot, true);
+        e.set_visual(slot, visual);
+    }
+    render_now(&mut e)
+}
+
+#[test]
+fn an_xterm_color_transforms_as_its_hex_does() {
+    let half = AudioColor {
+        brightness: 0.5,
+        matrix: IDENTITY,
+    };
+    let frame = xterm_and_hex_white(ARGS, half);
+    assert!(
+        frame.contains("38;2;127;127;127mX") && frame.contains("38;2;127;127;127mY"),
+        "{frame:?}"
+    );
+
+    // under --xterm-colors both come out as the nearest code to 7f7f7f
+    let xterm = [&["ttfx", "--xterm-colors"], &ARGS[1..]].concat();
+    let frame = xterm_and_hex_white(&xterm, half);
+    let code = ttfx::utils::hexterm::hex_to_xterm("7f7f7f");
+    assert!(
+        frame.contains(&format!("38;5;{code}mX")) && frame.contains(&format!("38;5;{code}mY")),
+        "{frame:?}"
+    );
+}
+
+#[test]
+fn xterm_output_keeps_the_codes_a_transform_leaves_alone() {
+    // xterm 16 is 000000, as 0 is: unchanged by the transform, it stays 16
+    let xterm = [&["ttfx", "--xterm-colors"], &ARGS[1..]].concat();
+    let (mut e, _) = build(&xterm);
+    e.set_audio_color(Some(AudioColor {
+        brightness: 0.5,
+        matrix: IDENTITY,
+    }));
+    let black = authored_in(&mut e, "X", Color::from_xterm(16));
+    e.set_visible(0, true);
+    e.set_visual(0, black);
+    let frame = render_now(&mut e);
+    assert!(frame.contains("38;5;16mX"), "{frame:?}");
 }
 
 #[test]

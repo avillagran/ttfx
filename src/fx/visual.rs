@@ -175,9 +175,6 @@ pub struct VisualPool {
     no_color: bool,
     xterm_colors: bool,
     table: Table,
-    /// The renderer's color-transform variants, interned apart from `table`
-    /// so `make` never hands an effect one (made on first use).
-    variants: Option<Table>,
     /// Every visual's key (`raw` ones too), by handle: its info follows from
     /// it, so only the key is kept (a new visual writes 24 bytes, not ~70).
     keys: Vec<Key>,
@@ -194,7 +191,6 @@ impl VisualPool {
             no_color,
             xterm_colors,
             table: Table::new(),
-            variants: None,
             keys: Vec::with_capacity(1 << 14),
             spans: Vec::with_capacity(1 << 14),
             bytes: vec![0; COPY_BLOCK],
@@ -215,6 +211,11 @@ impl VisualPool {
     /// The handles handed out so far: 0..len() are all valid.
     pub fn len(&self) -> usize {
         self.spans.len()
+    }
+
+    /// Colors are never written (--no-color).
+    pub(super) fn no_color(&self) -> bool {
+        self.no_color
     }
 
     /// `make` of `sym` in generated colors with no attributes but
@@ -238,22 +239,40 @@ impl VisualPool {
         }
     }
 
-    /// `make` for the renderer's transformed variants: deduplicated among
-    /// themselves, never against the visuals effects make.
-    pub(super) fn make_variant(&mut self, symbols: &Symbols, info: VisualInfo) -> Visual {
-        let key = Key::of(&info);
-        let hash = key.hash();
-        let variants = self.variants.get_or_insert_with(Table::new);
-        match variants.find(&key, hash, &self.keys) {
-            Ok(visual) => visual,
-            Err(at) => {
-                let visual = self.append(symbols, &info, key);
-                if let Some(variants) = &mut self.variants {
-                    variants.insert(at, hash, visual);
-                }
-                visual
-            }
-        }
+    /// A visual for the renderer's color transform, outside the table so
+    /// `make` never hands an effect one, with room to be rewritten in any
+    /// colors (`rewrite_variant`).
+    pub(super) fn add_variant(&mut self, symbols: &Symbols, info: VisualInfo) -> Visual {
+        let offset = self.bytes.len() - COPY_BLOCK;
+        let most = SGR_MAX + symbols.get(info.sym).len() + RESET.len();
+        self.bytes.resize(offset + most + COPY_BLOCK, 0);
+        let handle = Visual(self.keys.len() as u32);
+        self.keys.push(Key::of(&info));
+        self.spans.push(Span {
+            offset: offset as u32,
+            len: 0,
+        });
+        self.rewrite_variant(symbols, handle, info);
+        handle
+    }
+
+    /// `add_variant`'s visual formatted again in `info`, in place: the same
+    /// symbol, so it fits the room made for it.
+    pub(super) fn rewrite_variant(
+        &mut self,
+        symbols: &Symbols,
+        visual: Visual,
+        info: VisualInfo,
+    ) -> Span {
+        let symbol = symbols.get(info.sym).as_bytes();
+        let span = &mut self.spans[visual.0 as usize];
+        let offset = span.offset as usize;
+        let most = SGR_MAX + symbol.len() + RESET.len();
+        let room = &mut self.bytes[offset..offset + most];
+        span.len = format_visual(room, symbol, &info, self.no_color, self.xterm_colors) as u32;
+        self.max_len = self.max_len.max(span.len as usize);
+        self.keys[visual.0 as usize] = Key::of(&info);
+        *span
     }
 
     /// A new visual: `info`'s bytes formatted at the pool's end, its `key`
@@ -267,14 +286,6 @@ impl VisualPool {
         hash: u32,
         at: usize,
     ) -> Visual {
-        let handle = self.append(symbols, info, key);
-        self.table.insert(at, hash, handle);
-        handle
-    }
-
-    /// `info`'s bytes formatted at the pool's end, under `key`.
-    #[inline(always)]
-    fn append(&mut self, symbols: &Symbols, info: &VisualInfo, key: Key) -> Visual {
         let (no_color, xterm_colors) = (self.no_color, self.xterm_colors);
         let offset = self.bytes.len() - COPY_BLOCK;
         // formatted in place, over the slack and room made past it (a
@@ -303,6 +314,7 @@ impl VisualPool {
             offset: offset as u32,
             len: len as u32,
         });
+        self.table.insert(at, hash, handle);
         handle
     }
 

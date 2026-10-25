@@ -96,6 +96,7 @@ pub fn run_effect(
     let mut out = RawStdout;
     let mut outcome = RunOutcome::Complete;
     let move_to_top = e.terminal.move_cursor_to_top().as_bytes().to_vec();
+    let differential = tty_output && !e.config.ignore_terminal_dimensions;
     let result = (|| -> std::io::Result<()> {
         let mut prep = Vec::new();
         e.terminal.prep_canvas(&mut prep)?;
@@ -104,6 +105,7 @@ pub fn run_effect(
             return run_threaded(effect, e, tty_output, &move_to_top, &mut outcome);
         }
         let mut parts: Vec<IoSlice<'static>> = Vec::new();
+        let mut output = crate::utils::differential::DifferentialOutput::default();
         loop {
             if let Some(stop) = e.requested_stop(tty_output) {
                 outcome = stop;
@@ -118,6 +120,14 @@ pub fn run_effect(
                 break;
             }
             e.render_here();
+            if differential {
+                if e.terminal.take_repaint() {
+                    output.invalidate();
+                } else if let Some(bytes) = e.renderer().differential_frame(&mut output, &move_to_top) {
+                    out.write_all(bytes)?;
+                    continue;
+                }
+            }
             let mut frame = reuse(std::mem::take(&mut parts));
             e.renderer().frame_parts(&move_to_top, &[], &mut frame);
             write_all_vectored(&mut frame)?;
@@ -196,6 +206,8 @@ struct Packet {
     slots: usize,
     /// The pool's capacity (see Render::fit).
     room: (usize, usize),
+    /// Write this frame whole (see Terminal::take_repaint).
+    repaint: bool,
 }
 
 struct Ring {
@@ -280,6 +292,7 @@ impl Submitter<'_> {
         self.bytes += bytes.len();
         packet.slots = e.ch.len();
         packet.room = pool_room(&e.visuals);
+        packet.repaint = e.terminal.take_repaint();
         self.head = self.head.wrapping_add(1);
         ring.head.store(self.head, SeqCst);
         if ring.render_sleeping.load(SeqCst)
@@ -318,13 +331,20 @@ impl Drop for PanicGuard<'_> {
 /// The renderer thread: replay, format and write every frame handed over.
 /// After a failed write it keeps taking frames (so the main thread never
 /// waits on a full ring) without writing them.
-fn render_loop(ring: &Ring, r: &mut Render, prefix: &[u8], main: Thread) -> std::io::Result<()> {
+fn render_loop(
+    ring: &Ring,
+    r: &mut Render,
+    prefix: &[u8],
+    differential: bool,
+    main: Thread,
+) -> std::io::Result<()> {
     let _guard = PanicGuard {
         ring,
         main: main.clone(),
     };
     let mut result = Ok(());
     let mut parts: Vec<IoSlice<'static>> = Vec::new();
+    let mut output = crate::utils::differential::DifferentialOutput::default();
     let mut done = 0u32;
     let mut spins = 0;
     loop {
@@ -356,10 +376,23 @@ fn render_loop(ring: &Ring, r: &mut Render, prefix: &[u8], main: Thread) -> std:
                 r.sync(&packet.spans, &packet.bytes, packet.slots);
                 r.apply(&packet.log);
                 r.render_rows();
-                let mut frame = reuse(std::mem::take(&mut parts));
-                r.frame_parts(prefix, &[], &mut frame);
-                result = write_all_vectored(&mut frame);
-                parts = reuse(frame);
+                let bytes = if differential && packet.repaint {
+                    output.invalidate();
+                    None
+                } else if differential {
+                    r.differential_frame(&mut output, prefix)
+                } else {
+                    None
+                };
+                result = if let Some(bytes) = bytes {
+                    RawStdout.write_all(bytes)
+                } else {
+                    let mut frame = reuse(std::mem::take(&mut parts));
+                    r.frame_parts(prefix, &[], &mut frame);
+                    let result = write_all_vectored(&mut frame);
+                    parts = reuse(frame);
+                    result
+                };
                 if result.is_err() {
                     ring.failed.store(true, SeqCst);
                 }
@@ -380,6 +413,7 @@ fn run_threaded(
     prefix: &[u8],
     outcome: &mut RunOutcome,
 ) -> std::io::Result<()> {
+    let differential = tty_output && !e.config.ignore_terminal_dimensions;
     let mut r = e
         .render
         .back
@@ -391,7 +425,7 @@ fn run_threaded(
     let ring = Ring::new();
     let main = thread::current();
     let result = thread::scope(|s| {
-        let render = s.spawn(|| render_loop(&ring, &mut r, prefix, main));
+        let render = s.spawn(|| render_loop(&ring, &mut r, prefix, differential, main));
         let mut submitter = Submitter {
             ring: &ring,
             renderer: render.thread().clone(),

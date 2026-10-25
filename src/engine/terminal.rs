@@ -128,6 +128,9 @@ pub struct Terminal {
     pub input_colors_frequency: ColorFrequency,
     terminal_dimensions: (i64, i64),
     resize_seen_at: Option<Instant>,
+    /// A resize was seen since the last frame was written. The terminal may
+    /// have reflowed what it shows, so differential output cannot trust it.
+    repaint: bool,
     /// Pre-wrap input line lengths — all `compute_layout` needs from the input,
     /// so a resize can re-derive the geometry without re-preprocessing.
     input_line_lengths: Vec<i64>,
@@ -160,6 +163,7 @@ pub struct Terminal {
     row_bytes: Vec<Vec<u8>>,
     pub terminal_state: Vec<String>,
     output_buffer: String,
+    differential: crate::utils::differential::DifferentialOutput,
     move_cursor_to_top: String,
     frame_rate: i64,
     last_time_printed: Instant,
@@ -357,6 +361,7 @@ impl Terminal {
             input_colors_frequency,
             terminal_dimensions,
             resize_seen_at: None,
+            repaint: false,
             input_line_lengths,
             canvas_column_offset,
             canvas_row_offset,
@@ -379,6 +384,7 @@ impl Terminal {
             row_bytes: Vec::new(),
             terminal_state: Vec::new(),
             output_buffer: String::new(),
+            differential: Default::default(),
             move_cursor_to_top,
             frame_rate,
             last_time_printed: Instant::now(),
@@ -796,12 +802,21 @@ impl Terminal {
     /// exactly where it was, and restarting for those is pure loss. Explicitly
     /// ignored dimensions are fixed by definition.
     pub fn resize_settled(&mut self) -> bool {
-        resize_settled(
+        let seen_before = self.resize_seen_at;
+        let settled = resize_settled(
             &mut self.resize_seen_at,
             &self.config,
             &self.input_line_lengths,
             self.terminal_dimensions,
-        )
+        );
+        // A new signal always restamps seen_at; most resizes never restart.
+        self.repaint |= self.resize_seen_at.is_some() && self.resize_seen_at != seen_before;
+        settled
+    }
+
+    /// Whether the next frame must be written whole, consuming the request.
+    pub(crate) fn take_repaint(&mut self) -> bool {
+        std::mem::take(&mut self.repaint)
     }
 
     /// After a resize: go back to the top of the area this run allocated, wipe
@@ -848,6 +863,36 @@ impl Terminal {
     ) -> std::io::Result<()> {
         self.write_move_cursor_to_top(out)?;
         out.write_all(output_string.as_bytes())?;
+        out.flush()
+    }
+
+    pub(crate) fn print_differential_frame(
+        &mut self,
+        out: &mut impl Write,
+        output_string: &str,
+    ) -> std::io::Result<()> {
+        if self.take_repaint() {
+            self.differential.invalidate();
+            return self.print_frame(out, output_string);
+        }
+        let width = self.visible_right.max(0) as usize;
+        let height = self.visible_top.max(0) as usize;
+        let cells = &self.render_visuals;
+        let frame = self.differential.frame(
+            width,
+            height,
+            self.move_cursor_to_top.as_bytes(),
+            |row, col| {
+                let visual = cells[(height - 1 - row) * width + col];
+                // SAFETY: visuals are pooled for the lifetime of the terminal.
+                unsafe { visual.as_ref() }
+                    .map_or(b" " as &[u8], |v| v.formatted_symbol.as_str().as_bytes())
+            },
+        );
+        match frame {
+            Some(bytes) => out.write_all(bytes)?,
+            None => return self.print_frame(out, output_string),
+        }
         out.flush()
     }
 
@@ -1082,4 +1127,34 @@ fn setup_input_characters(
     canvas
         .anchor_text(arena, input_characters, config.anchor_text)
         .map_err(EngineError::Other)
+}
+
+#[cfg(test)]
+mod differential_tests {
+    use super::*;
+
+    #[test]
+    fn a_resize_repaints_the_whole_frame_once() {
+        let config = TerminalConfig {
+            ignore_terminal_dimensions: true,
+            ..TerminalConfig::default()
+        };
+        let mut terminal = Terminal::new("ab\ncd", config).unwrap();
+        for id in terminal.input_characters.clone() {
+            terminal.set_character_visibility(id, true);
+        }
+        let frame = |terminal: &mut Terminal| {
+            let whole = terminal.get_formatted_output_string();
+            let mut out = Vec::new();
+            terminal.print_differential_frame(&mut out, &whole).unwrap();
+            (whole, String::from_utf8(out).unwrap())
+        };
+        frame(&mut terminal);
+        assert_eq!(frame(&mut terminal).1, "");
+
+        terminal.repaint = true;
+        let (whole, written) = frame(&mut terminal);
+        assert_eq!(written, format!("{}{}", terminal.move_cursor_to_top(), whole));
+        assert!(!frame(&mut terminal).1.is_empty(), "the cache was not invalidated");
+    }
 }

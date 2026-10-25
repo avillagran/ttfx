@@ -23,12 +23,19 @@ const ARGS: &[&str] = &[
     "decrypt",
 ];
 
-/// An effect that installs a transform before its `at`th frame.
+/// An effect that installs a transform before its `at`th frame; `primed`,
+/// it first renders a frame under one and removes it again.
 struct Late {
     inner: Box<dyn fx::run::Effect>,
     frame: u32,
     at: u32,
+    primed: bool,
 }
+
+const HALF: AudioColor = AudioColor {
+    brightness: 0.5,
+    matrix: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+};
 
 impl Hooks for Late {
     fn callback(&mut self, e: &mut Engine, slot: u32, id: u32, arg: i64) {
@@ -38,16 +45,21 @@ impl Hooks for Late {
 
 impl fx::run::Effect for Late {
     fn build(&mut self, e: &mut Engine) -> Result<(), EngineError> {
-        self.inner.build(e)
+        self.inner.build(e)?;
+        if self.primed {
+            e.set_audio_color(Some(HALF));
+            self.inner.next_frame(e);
+            e.frame();
+            e.render_here();
+            e.set_audio_color(None);
+        }
+        Ok(())
     }
 
     fn next_frame(&mut self, e: &mut Engine) -> bool {
         self.frame += 1;
         if self.frame == self.at {
-            e.set_audio_color(Some(AudioColor {
-                brightness: 0.5,
-                matrix: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
-            }));
+            e.set_audio_color(Some(HALF));
         }
         self.inner.next_frame(e)
     }
@@ -61,7 +73,7 @@ unsafe extern "C" {
 
 /// What run_effect writes with TTFX_THREADS=`threads`, the transform
 /// installed before frame `at` (0: never).
-fn run(threads: &str, at: u32) -> Vec<u8> {
+fn run(threads: &str, at: u32, primed: bool) -> Vec<u8> {
     std::env::set_var("TTFX_THREADS", threads);
     let cli = Cli::try_parse_from(ARGS).unwrap();
     let mut e = Engine::new(
@@ -75,6 +87,7 @@ fn run(threads: &str, at: u32) -> Vec<u8> {
         inner: fx::effects::build(&cli.effect.unwrap()).unwrap(),
         frame: 0,
         at,
+        primed,
     };
     let path = std::env::temp_dir().join(format!("ttfx-threaded-{}", std::process::id()));
     let file = std::fs::File::create(&path).unwrap();
@@ -96,13 +109,22 @@ fn run(threads: &str, at: u32) -> Vec<u8> {
 
 #[test]
 fn a_transform_installed_mid_run_shows_on_a_threaded_run() {
-    let in_place = run("1", 5);
-    assert!(in_place != run("1", 0), "the transform shows in place");
+    let in_place = run("1", 5, false);
+    assert!(in_place != run("1", 0, false), "the transform shows in place");
     // threaded wherever there are two CPUs to run on
-    let threaded = run("2", 5);
+    let threaded = run("2", 5, false);
     assert!(
         threaded == in_place,
         "threaded output differs: {} bytes against {}",
+        threaded.len(),
+        in_place.len()
+    );
+
+    // a transform removed before a threaded run starts stays removed
+    let (in_place, threaded) = (run("1", 0, true), run("2", 0, true));
+    assert!(
+        threaded == in_place,
+        "removed transform still shows: {} bytes against {}",
         threaded.len(),
         in_place.len()
     );

@@ -431,6 +431,8 @@ fn run_threaded(
         .expect("the renderer runs on another thread");
     r.sync_pool(&e.visuals);
     r.settle_late();
+    // a transform removed since the last frame rendered here is undone first
+    r.apply_audio_color(&mut e.visuals, &e.symbols, None);
     let (spans, bytes) = (e.visuals.spans.len(), e.visuals.bytes.len() - COPY_BLOCK);
     let ring = Ring::new();
     let main = thread::current();

@@ -44,7 +44,8 @@ pub use visual::{Visual, VisualInfo};
 /// Live color transform installed by an embedder: a row-major 3x3 hue
 /// matrix and a brightness multiplier. Applied per frame to the colors the
 /// visuals were authored with, never accumulated into them. With no
-/// transform installed the output is byte-identical.
+/// transform installed the output is byte-identical. Parameters are not
+/// validated: a NaN channel comes out 0 and the rest clamp to 0..=255.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AudioColor {
     pub brightness: f32,
@@ -53,11 +54,11 @@ pub struct AudioColor {
 
 /// Per-frame audio levels for effect reactivity (thunderstorm et al.): the
 /// embedder samples its source and feeds them before `next_frame`. All
-/// zero/false means silence and selects the reference behavior.
+/// zero/false means silence and selects the reference behavior. `volume`
+/// is clamped to 0..=1; NaN reads as silence.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct AudioLevels {
     pub volume: f32,
-    pub bass: f32,
     pub beat: bool,
 }
 
@@ -374,7 +375,7 @@ pub struct Engine {
     /// The embedder's live color transform (set_audio_color).
     audio_color: Option<AudioColor>,
     /// The embedder's per-frame audio levels (set_audio_levels).
-    pub audio_levels: AudioLevels,
+    audio_levels: AudioLevels,
 }
 
 impl Engine {

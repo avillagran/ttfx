@@ -55,7 +55,6 @@ fn zero_levels_keep_the_reference_sequence_and_driven_levels_change_it() {
     let silence = AudioLevels::default();
     let driven = AudioLevels {
         volume: 0.9,
-        bass: 0.9,
         beat: true,
     };
 

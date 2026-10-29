@@ -55,7 +55,8 @@ pub struct AudioColor {
 /// Per-frame audio levels for effect reactivity (thunderstorm et al.): the
 /// embedder samples its source and feeds them before `next_frame`. All
 /// zero/false means silence and selects the reference behavior. `volume`
-/// is clamped to 0..=1; NaN reads as silence.
+/// is clamped to 0..=1; NaN reads as silence. Thunderstorm starts no audio
+/// strike once its storm time has passed, so a timed storm still ends.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct AudioLevels {
     pub volume: f32,

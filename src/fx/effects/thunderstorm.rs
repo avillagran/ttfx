@@ -896,7 +896,11 @@ impl Effect for Thunderstorm {
             Phase::Storm => {
                 self.rain(e);
                 let levels = e.audio_levels;
-                if (levels.volume > 0.0 || levels.beat) && !self.strike_in_progress {
+                // Audio starts no strike once storm_time has passed, so a
+                // timed storm still ends; the strike in flight finishes.
+                let storm_over = e.clock.now_monotonic() - self.storm_start_time
+                    >= self.config.storm_time as f64;
+                if (levels.volume > 0.0 || levels.beat) && !self.strike_in_progress && !storm_over {
                     // A fresh chance draw per frame while audio drives it;
                     // silence never enters here, keeping the ambient draw
                     // sequence byte-identical.

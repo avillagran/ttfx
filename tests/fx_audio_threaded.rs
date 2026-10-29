@@ -3,7 +3,7 @@
 //! that installed it, exactly as on a run that was never threaded. One test
 //! in its own binary, as it points stdout (where run_effect writes) at a file.
 
-use std::io::Write;
+use std::io::{Read, Seek, Write};
 use std::os::fd::AsRawFd;
 
 use clap::Parser;
@@ -71,6 +71,36 @@ unsafe extern "C" {
     fn close(fd: i32) -> i32;
 }
 
+/// A new file of our own in the temp directory. `create_new` refuses a path
+/// that already exists, a symlink included, so a name planted ahead of us
+/// is skipped rather than followed and truncated.
+fn scratch_file() -> (std::path::PathBuf, std::fs::File) {
+    use std::os::unix::fs::OpenOptionsExt;
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    for _ in 0..100 {
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "ttfx-threaded-{}-{nanos:08x}-{n}",
+            std::process::id()
+        ));
+        match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+        {
+            Ok(file) => return (path, file),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => panic!("creating {}: {e}", path.display()),
+        }
+    }
+    panic!("no free scratch file name in the temp directory");
+}
+
 /// What run_effect writes with TTFX_THREADS=`threads`, the transform
 /// installed before frame `at` (0: never).
 fn run(threads: &str, at: u32, primed: bool) -> Vec<u8> {
@@ -89,8 +119,7 @@ fn run(threads: &str, at: u32, primed: bool) -> Vec<u8> {
         at,
         primed,
     };
-    let path = std::env::temp_dir().join(format!("ttfx-threaded-{}", std::process::id()));
-    let file = std::fs::File::create(&path).unwrap();
+    let (path, file) = scratch_file();
     std::io::stdout().flush().unwrap();
     // SAFETY: plain descriptor calls; stdout is restored before anything
     // else writes to it.
@@ -102,7 +131,11 @@ fn run(threads: &str, at: u32, primed: bool) -> Vec<u8> {
         close(saved);
     }
     outcome.unwrap();
-    let bytes = std::fs::read(&path).unwrap();
+    // read back through the descriptor we created, not the name
+    let mut file = file;
+    let mut bytes = Vec::new();
+    file.seek(std::io::SeekFrom::Start(0)).unwrap();
+    file.read_to_end(&mut bytes).unwrap();
     std::fs::remove_file(&path).unwrap();
     bytes
 }
